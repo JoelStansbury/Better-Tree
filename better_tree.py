@@ -1,3 +1,6 @@
+# Author: Joel Stansbury
+# Email: stansbury.joel@gmail.com 
+
 from pathlib import Path
 import time
 from uuid import uuid1
@@ -307,7 +310,7 @@ class Tree:
         for c in self.registry[node_id].children:
             collector += self.__repr__(c, level+1)
         return collector
-    
+
 
 class TreeWidget(ipyw.VBox):
     selected_id = Unicode('root')
