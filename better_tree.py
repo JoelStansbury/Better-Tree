@@ -61,6 +61,7 @@ class Tree:
             are added via `Tree.add_multiple(nodes)`
         """
         self.root = Node({'id':'root', 'label':'root'})
+        self.root.controller = self
         self.root.level=0
         self.registry = {
             'root':self.root
