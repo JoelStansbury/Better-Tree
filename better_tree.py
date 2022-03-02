@@ -372,7 +372,7 @@ class Tree:
 
 
 class TreeWidget(ipyw.VBox):
-    selected_id = Unicode('root')
+    selected_id = Unicode(None, allow_none=True)
     def __init__(
         self,
         tree,
