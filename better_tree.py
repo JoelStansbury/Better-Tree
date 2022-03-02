@@ -11,31 +11,36 @@ from typing import Union, List
 
 
 CSS = ipyw.HTML("""
-<style>
-.better-tree-btn {
-    background: transparent;
-    text-align: left;
-}
-.better-tree-small {
-    text-align: center;
-    background: transparent;
-    padding:0;
-	width: 15px;
-}
-.better-tree-selected {
-    background: lightgrey;
-    text-align: left;
-}
-</style>
-""")
+    <style>
+        .better-tree-btn {
+            background: transparent;
+            text-align: left;
+            width: 100%;
+        }
+        .better-tree-small {
+            text-align: center;
+            background: transparent;
+            padding:0;
+            width: 15px;
+        }
+        .better-tree-selected {
+            background: lightgrey;
+            text-align: left;
+        }
+        .better-tree-box {
+            height: -webkit-fill-available;
+            width: 250px;
+        }
+    </style>
+    """)
 
 
 class Node:
     def __init__(self, data):
         self.data = data if data else {}
+        self.data['children'] = self.data.get('children',[])
         self.id = self.data.get("id", str(uuid1()))
-        self.parent = self.data.get("parent", None)
-        self.children = self.data.get("children", [])
+        # self.parent = self.data.get("parent", None)
         self.opened = False
         self.selected = False
     
@@ -44,8 +49,7 @@ class Node:
     
     def to_dict(self):
         self.data["id"] = self.id
-        self.data["parent"] = self.parent
-        self.data["children"] = self.children
+        self.data["children"] = self.data['children']
         return self.data
 
 
@@ -62,33 +66,36 @@ class Tree:
             'root':self.root
         }
         self.listeners = []
+        self.widget = None
+        self.onchange_todos = []
+
         if nodes:
             self.add_multiple(nodes)
 
     def _disown(self, node):
         if node.parent is not None:
             old_parent = self.registry[node.parent]
-            old_parent.children.remove(node.id)
+            old_parent.data['children'].remove(node.id)
         node.parent = None
     
     def _set_parent(self, node, parent, position=None):
         if position is None:
-            parent.children.append(node.id)
+            parent.data['children'].append(node.id)
         else:
-            parent.children.insert(position, node.id)
+            parent.data['children'].insert(position, node.id)
         node.parent = parent.id
 
     def _validate(self):
         for id, node in self.registry.items():
-            for c in node.children:
-                assert c in self.registry, "child does not exist"
+            for c in node.data['children']:
+                assert c in self.registry, f"child {c} of {node} does not exist"
                 assert self.registry[c].parent == id, \
                     f"child {self.registry[c]} has a different parent: {self.parent_of(c)}.\n" + \
                     f"Should be: {self.registry[id]}"
 
         for id, node in self.registry.items():
             if id != 'root':
-                assert id in self.registry[node.parent].children
+                assert id in self.registry[node.parent].data['children']
  
     def _compute_depth(self, node_id='root', level=0):
         # TODO: Collect some statistics about this. It may actually
@@ -97,23 +104,33 @@ class Tree:
         # on an alteration
         node = self.registry[node_id]
         node.level = level
-        for c in node.children:
+        for c in node.data['children']:
             self._compute_depth(c,level+1)
 
-    def _notify_widgets(self):
-        for f in self.listeners:
+    def onchange(self, function):
+        self.onchange_todos.append(function)
+    
+    def _do_onchange(self):
+        if self.widget:
+            self.widget.compute_visible()
+        for f in self.onchange_todos:
             f()
 
+    def _set_controller(self):
+        for id, node in self.registry.items():
+            node.controller = self
+
     def _housekeeping(self):
-        self._validate()
+        # self._validate()
+        # self._set_controller()
         self._compute_depth()
-        self._notify_widgets()
+        self._do_onchange()
 
     def _handle_type(self, node:Union[str, Node, dict], allow_creation=False):
         if isinstance(node, str):
             return self.registry[node] 
         if isinstance(node, dict):
-            if node["id"] in self.registry:
+            if ('id' in node) and (node["id"] in self.registry):
                 return self.registry[node["id"]]
             if allow_creation:
                 return Node(node)
@@ -128,6 +145,7 @@ class Tree:
         set parent to 'root' if it is None
         """
         node = self._handle_type(node, allow_creation=True)
+        node.controller = self
         assert node.id not in self.registry, "that id is already in use"
         self.registry[node.id] = node
         if node.parent is None:
@@ -144,18 +162,34 @@ class Tree:
         parent:Union[str, Node] = 'root'
     ):
         """
-        Assumes all parent and children relationships are compatible
+        If a node is not present in any of the other provided
+        nodes' "children" list, then it is considered an orphan and placed
+        directly beneath `parent` (default: 'root').
+
+        every node in `node_list` is required to have a 'children' attribute
         """
         parent = self._handle_type(parent)
         node_list = [
             self._handle_type(node, allow_creation=True)
             for node in node_list
         ]
+
+        ids = set([x.id for x in node_list])
+        children = set(sum([x.data['children'] for x in node_list],[]) )
+        orphans = ids - children
+
+        for n in node_list:  # preserve the order of node_list
+            if n.id in orphans:
+                parent.data['children'].append(n.id)
+
         for node in node_list:
+            node.parent = parent.id
+            node.controller = self
             self.registry[node.id] = node
-        for node in node_list:
-            if node.parent is None:
-                self._set_parent(node, parent)
+
+        for id, node in self.registry.items():
+            for c in node.data['children']:
+                self.registry[c].parent = id
         self._housekeeping()
     
     def move(
@@ -181,14 +215,16 @@ class Tree:
         parent_id:str='root',
         children_key:str='children',
     ):
-        node_data['parent'] = parent_id
+        # node_data['parent'] = parent_id
         if children_key in node_data:
             children_list = node_data.pop(children_key)
         else:
             children_list = []
         node_data["children"]=[]
-        node = Node(node_data)
-        self.registry[parent_id].children.append(node.id)
+        node = Node(node_data)  # get or create node.id
+        node.parent = parent_id
+        node.controller = self
+        self.registry[parent_id].data['children'].append(node.id)
         self.registry[node.id] = node
         for child in children_list:
             self._insert_nested_dict(
@@ -198,8 +234,8 @@ class Tree:
     def insert_nested_dicts(
         self,
         node_data_list:List[dict],
+        parent_id:str=None,
         children_key:str='children',
-        parent_id:str=None
     ):
         if parent_id is None:
             parent_id = self.root.id
@@ -211,6 +247,17 @@ class Tree:
             )
         self._housekeeping()
     
+    def insert(self, node_data, parent_id='root'):
+        node = Node(node_data)
+        node.controller = self
+        assert node.id not in self.registry
+        assert parent_id in self.registry
+        self.registry[node.id] = node
+        node.parent = parent_id
+        self.registry[parent_id].data['children'].append(node.id)
+        self._housekeeping()
+        return node
+
     def remove(
         self, 
         node:Union[str, Node],
@@ -221,39 +268,46 @@ class Tree:
             for c in list(self.dfs(node.id)):
                 self.registry.pop(c.id)
         else:  # move children up
-            for c in node.children:
+            for c in node.data['children']:
                 self.move(c, node.parent)
-        
-        # remove from registry
-        self.registry.pop(node.id)
         
         # remove from parent's children
         self._disown(node)
         self._housekeeping()
 
+    def remove_children(
+        self, 
+        node:Union[str, Node]
+    ):
+        node = self._handle_type(node)
+        for c in list(self.dfs(node.id))[1:]:
+            self.registry.pop(c.id)
+        node.data['children'] = []
+        self._housekeeping()
+
     def bfs(self, node_ids:Union[str, List[str]]='root'):
         if isinstance(node_ids, str):
             node_ids = [node_ids]
+        for c in node_ids:
+            yield self.registry[c]
         next_ids = sum(
-            [self.registry[node_id].children for node_id in node_ids],
+            [self.registry[node_id].data['children'] for node_id in node_ids],
             []
         )
         if next_ids:
-            for c in next_ids:
-                yield self.registry[c]
             yield from self.bfs(next_ids)
     
     def dfs(self, node_id:str='root'):
-        for c in self.registry[node_id].children:
-            yield self.registry[c]
+        yield self.registry[node_id]
+        for c in self.registry[node_id].data['children']:
             yield from self.dfs(c)
 
     def to_list(self, node_id:str='root'):
         result = []
         for node in self.dfs(node_id):
             d = node.to_dict()
-            if d["parent"] == node_id:
-                d["parent"] = None
+            # if d["parent"] == node_id:
+            #     d["parent"] = None
             result.append(d)
         return result
 
@@ -266,6 +320,7 @@ class Tree:
         self.registry = {'root':self.root}
         self.root.data['label'] = str(root)
         self.root.data['icon'] = 'folder'
+        self.root.data['type'] = 'folder'
 
         icons = {
             'pdf':'file-pdf',
@@ -290,16 +345,19 @@ class Tree:
                 _id = _id / part
                 if not part in [x['label'] for x in cursor["children"]]:
                     icon = 'folder'
+                    _type = 'folder'
                     if len(part.split('.'))>1:
                         icon = 'file'
-                        if part.split('.')[-1] in icons:
+                        _type = part.split('.')[-1]
+                        if _type in icons:
                             icon = icons[part.split('.')[-1]]
                     cursor['children'].append(
                         {
                             'id':str(_id),
                             'label':part,
                             'children':[],
-                            'icon':icon
+                            'icon':icon,
+                            'type':_type,
                         }
                     )
                 cursor = [x for x in cursor["children"] if x['label'] == part][0]
@@ -307,7 +365,7 @@ class Tree:
 
     def __repr__(self, node_id:str='root', level=0):
         collector = f"{' '*level}{self.registry[node_id]}\n"
-        for c in self.registry[node_id].children:
+        for c in self.registry[node_id].data['children']:
             collector += self.__repr__(c, level+1)
         return collector
 
@@ -325,9 +383,10 @@ class TreeWidget(ipyw.VBox):
             watched_events=["wheel"]  #, "mousemove", "mouseleave"]
         )
         d.on_dom_event(self.event_handler)
-
+        self.add_class("better-tree-box")
         self.tree = tree
-        self.tree.listeners.append(self.refresh)
+        self.tree.onchange(self.refresh)
+        self.tree.widget = self
         self.rows = [
             NodeWidget(
                 self._open_callback,
@@ -340,9 +399,12 @@ class TreeWidget(ipyw.VBox):
         self.selected_node = None
 
         self.scroll_speed = 1 # set and incrimented in self.scroll
+        self.last_deltaY = 0  # attr for deltaY to prevent trackpad accel
+        self.trackpad_collector = 0
         self.last_scroll_time = time.time()
 
         self._collapse_all()
+        self.compute_visible()
         self.refresh()
 
     def _collapse_all(self):
@@ -361,20 +423,24 @@ class TreeWidget(ipyw.VBox):
         node = self.tree.registry[id]
         collector.append(node)
         if node.opened:
-            for c in node.children:
+            for c in node.data['children']:
                 collector += self._compute_visible(c)
         return collector
     
-    def _compute_inview(self):
+    def compute_visible(self):
         self._visible = self._compute_visible()
+    
+    def _compute_inview(self):
         return self._visible[self.cursor : self.cursor+self.height]
 
     def _open_callback(self, id, value):
         self.tree.registry[id].opened = value
+        self.compute_visible()
         self.refresh()
         
     def _select_callback(self, id):
-        self.tree.registry[self.selected_id].selected = False
+        if self.selected_id in self.tree.registry:  # may have been deleted since selection
+            self.tree.registry[self.selected_id].selected = False
         self.tree.registry[id].selected = True
         self.selected_id = id
         self.refresh()
@@ -383,24 +449,40 @@ class TreeWidget(ipyw.VBox):
         self.tree.add_node(**kwargs)
         self.refresh()
 
+    def goto_node(self, node_id):
+        node = self.tree.registry[node_id]
+
+        parent = self.tree.parent_of(node)
+        while parent.id != 'root':
+            parent.opened = True
+            parent = self.tree.parent_of(parent)
+
+        for i, node_id in enumerate(self._compute_visible()):
+            if node_id == node.id:
+                self.cursor = i
+                break
+        self.refresh()
+
     def scroll(self, val):
 
         self.cursor += val
-        self.cursor = min(self.cursor, len(self._visible) - self.height)
+        self.cursor = min(self.cursor, len(self._visible)-1)
         self.cursor = max(self.cursor, 0)
         self.refresh()
 
     def event_handler(self, event):
-        # print(event)
+        # TODO: add trackpad detection/option
         if "deltaY" in event:
-            if time.time() - self.last_scroll_time < 0.1:
+            print(event['deltaY'])
+            direction = 1 if event["deltaY"] > 0 else -1
+            if (time.time() - self.last_scroll_time < 0.1):  # Accelerate
+                self.last_deltaY = event['deltaY']
                 self.scroll_speed += 2
-            else:
+                self.last_scroll_time = time.time()
+                self.scroll(self.scroll_speed * direction)
+            else:  # Reset Speed to 1
                 self.scroll_speed = 1
-            self.last_scroll_time = time.time()
-
-            to_scroll = self.scroll_speed if event["deltaY"] > 0 else -self.scroll_speed
-            self.scroll(to_scroll)
+                self.scroll(direction)
 
     def refresh(self):
         inview = self._compute_inview()
@@ -463,7 +545,7 @@ class NodeWidget(ipyw.HBox):
         self._open_callback(self.id, self.opened)
         
     def select(self, _=None):
-        self.button.add_class("better-tree-selected")
+        # self.button.add_class("better-tree-selected")
         self._select_callback(self.id)
         
     def load(self, node):
@@ -471,7 +553,7 @@ class NodeWidget(ipyw.HBox):
         self.button.description = node.data.get("label","")
         self.indent_box.value = "&nbsp"*node.level*3
         self.opened = node.opened
-        if node.children:
+        if node.data['children']:
             if node.opened:
                 self.expand_btn.icon = 'chevron-down' 
             else:
