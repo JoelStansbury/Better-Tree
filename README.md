@@ -7,6 +7,7 @@ Drawbacks:
 * The API kinda sucks
 * Scrolling with a trackpad sucks
 * Scrolling with a mouse feels a little funny but not too bad
+* Still no drag-and-drop
 
 ![image](https://user-images.githubusercontent.com/48299585/155903772-17fc3497-cffa-4ae2-b03d-ad38e2fbd3d1.png)
 
