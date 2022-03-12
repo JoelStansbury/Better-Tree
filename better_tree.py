@@ -15,7 +15,7 @@ CSS = ipyw.HTML("""
         .better-tree-btn {
             background: transparent;
             text-align: left;
-            width: 100%;
+            width: 200px;
         }
         .better-tree-small {
             text-align: center;
@@ -31,9 +31,43 @@ CSS = ipyw.HTML("""
             height: -webkit-fill-available;
             width: 250px;
         }
+        .better-tree-node-window {
+            height: -webkit-fill-available;
+            overflow-x: scroll;
+        }
+        .better-tree-node-row {
+            overflow-x: clip;
+            width: fit-content;
+        }
+        .better-tree-slider {
+            height: -webkit-fill-available;
+            width: 16px;
+        }
     </style>
     """)
 
+
+ICONS = {
+    'pdf':'file-pdf',
+    'xlsx':'file-excel',
+    'xlsm':'file-excel',
+    'xls':'file-excel',
+    'csv':'file-csv',
+    'zip':'file-zipper',
+    'gzip':'file-zipper',
+    'tar':'file-zipper',
+    '7z':'file-zipper',
+    'png':'file-image',
+    'jpeg':'file-image',
+    'jpg':'file-image',
+    # Non-extension
+    'folder': 'folder',
+    'text': 'align-left',
+    'table': 'table',
+    'image': 'image',
+    'section': 'indent',
+    
+}
 
 class Node:
     def __init__(self, data):
@@ -46,7 +80,7 @@ class Node:
     
     def __repr__(self):
         return self.data["label"]
-    
+        
     def to_dict(self):
         self.data["id"] = self.id
         self.data["children"] = self.data['children']
@@ -114,6 +148,7 @@ class Tree:
     def _do_onchange(self):
         if self.widget:
             self.widget.compute_visible()
+            # self.widget.refresh()
         for f in self.onchange_todos:
             f()
 
@@ -250,6 +285,7 @@ class Tree:
     
     def insert(self, node_data, parent_id='root'):
         node = Node(node_data)
+        node.opened = True
         node.controller = self
         assert node.id not in self.registry
         assert parent_id in self.registry
@@ -320,23 +356,7 @@ class Tree:
         skip = len(root.parts)
         self.registry = {'root':self.root}
         self.root.data['label'] = str(root)
-        self.root.data['icon'] = 'folder'
         self.root.data['type'] = 'folder'
-
-        icons = {
-            'pdf':'file-pdf',
-            'xlsx':'file-excel',
-            'xlsm':'file-excel',
-            'xls':'file-excel',
-            'csv':'file-csv',
-            'zip':'file-zipper',
-            'gzip':'file-zipper',
-            'tar':'file-zipper',
-            '7z':'file-zipper',
-            'png':'file-image',
-            'jpeg':'file-image',
-            'jpg':'file-image',
-        }
 
         nodes = {'children':[]}
         for p in list(root.rglob(pattern)):
@@ -345,19 +365,14 @@ class Tree:
             for part in p.parts[skip:]:
                 _id = _id / part
                 if not part in [x['label'] for x in cursor["children"]]:
-                    icon = 'folder'
                     _type = 'folder'
                     if len(part.split('.'))>1:
-                        icon = 'file'
                         _type = part.split('.')[-1]
-                        if _type in icons:
-                            icon = icons[part.split('.')[-1]]
                     cursor['children'].append(
                         {
                             'id':str(_id),
                             'label':part,
                             'children':[],
-                            'icon':icon,
                             'type':_type,
                         }
                     )
@@ -395,6 +410,17 @@ class TreeWidget(ipyw.VBox):
             ) for i in range(height)
         ]
 
+        for nw in self.rows:
+            nw.add_class("better-tree-node-row")
+
+        self.slider = ipyw.IntSlider(
+            min=1,
+            max=1,  # updated as nodes are opened/closed
+            orientation="vertical", 
+            readout=False,
+        )
+        self.slider.add_class("better-tree-slider")
+
         self.height = height
         self.cursor = 0
         self.selected_node = None
@@ -403,10 +429,19 @@ class TreeWidget(ipyw.VBox):
         self.last_deltaY = 0  # attr for deltaY to prevent trackpad accel
         self.trackpad_collector = 0
         self.last_scroll_time = time.time()
+        
+        self.node_window = ipyw.VBox()
+        self.node_window.add_class("better-tree-node-window")
 
         self._collapse_all()
         self.compute_visible()
         self.refresh()
+        
+        self.slider.observe(self._slider_onchange, "value")
+        full_window = ipyw.HBox([self.slider,self.node_window])
+        full_window.add_class("better-tree-box")
+
+        self.children = [full_window, CSS]
 
     def _collapse_all(self):
         for id, node in self.tree.registry.items():
@@ -429,10 +464,16 @@ class TreeWidget(ipyw.VBox):
         return collector
     
     def compute_visible(self):
-        self._visible = self._compute_visible()
+        self.viewable_nodes = self._compute_visible()
+        if len(self.viewable_nodes) > 1:
+            previous_max = self.slider.max
+            previous_value = self.slider.value
+            new_value = len(self.viewable_nodes) - (previous_max - previous_value)
+            self.slider.max = len(self.viewable_nodes)
+            self.slider.value = new_value
     
     def _compute_inview(self):
-        return self._visible[self.cursor : self.cursor+self.height]
+        return self.viewable_nodes[self.cursor : self.cursor+self.height]
 
     def _open_callback(self, id, value):
         self.tree.registry[id].opened = value
@@ -450,9 +491,24 @@ class TreeWidget(ipyw.VBox):
         self.tree.add_node(**kwargs)
         self.refresh()
 
+    def scroll(self, val):
+        self.cursor += val
+        self.cursor = min(self.cursor, len(self.viewable_nodes)-1)
+        self.cursor = max(self.cursor, 0)
+        self.slider.value = len(self.viewable_nodes) - self.cursor
+        # self.refresh()
+        # Forces onchange event `_slider_onchange`
+
+    def _slider_onchange(self, event):
+        if "new" in event:
+            self.goto_index(len(self.viewable_nodes) - event["new"])
+        
+    def goto_index(self, index):
+        self.cursor = index
+        self.refresh()
+
     def goto_node(self, node_id):
         node = self.tree.registry[node_id]
-
         parent = self.tree.parent_of(node)
         while parent.id != 'root':
             parent.opened = True
@@ -464,17 +520,9 @@ class TreeWidget(ipyw.VBox):
                 break
         self.refresh()
 
-    def scroll(self, val):
-
-        self.cursor += val
-        self.cursor = min(self.cursor, len(self._visible)-1)
-        self.cursor = max(self.cursor, 0)
-        self.refresh()
-
     def event_handler(self, event):
         # TODO: add trackpad detection/option
         if "deltaY" in event:
-            print(event['deltaY'])
             direction = 1 if event["deltaY"] > 0 else -1
             if (time.time() - self.last_scroll_time < 0.1):  # Accelerate
                 self.last_deltaY = event['deltaY']
@@ -489,7 +537,7 @@ class TreeWidget(ipyw.VBox):
         inview = self._compute_inview()
         for i,node in enumerate(inview):
             self.rows[i].load(node)
-        self.children = self.rows[:len(inview)] + [CSS]
+        self.node_window.children = self.rows[:len(inview)]
             
     
 class NodeWidget(ipyw.HBox):
@@ -550,7 +598,7 @@ class NodeWidget(ipyw.HBox):
         self._select_callback(self.id)
         
     def load(self, node):
-        self.button.icon = node.data.get("icon","align-justify")
+        self.button.icon = ICONS.get(node.data['type'],"align-justify")
         self.button.description = node.data.get("label","")
         self.indent_box.value = "&nbsp"*node.level*3
         self.opened = node.opened
