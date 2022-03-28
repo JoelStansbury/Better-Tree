@@ -30,10 +30,11 @@ CSS = ipyw.HTML(
         }
         .better-tree-box {
             height: -webkit-fill-available;
-            width: 250px;
+            width: 300px;
         }
         .better-tree-node-window {
             height: -webkit-fill-available;
+            width: 99%;
             overflow-x: scroll;
         }
         .better-tree-node-row {
@@ -97,6 +98,7 @@ class Tree:
             are added via `Tree.add_multiple(nodes)`
         """
         self.root = Node({"id": "root", "label": "root"})
+        self.root.parent = None
         self.root.controller = self
         self.root.level = 0
         self.registry = {"root": self.root}
@@ -234,6 +236,10 @@ class Tree:
         Remove node from current parent's children (if applicable)
         Add node to new parent's children in the correct position
         Set the node's parent attribute to the new parent's id
+
+        params:
+            position <int> (default=None): Leave as None to append node to parent.children
+                Provide an integer to place the node in a specific location
         """
         node = self._handle_type(node)
         parent = self._handle_type(parent)
@@ -383,7 +389,9 @@ class TreeWidget(ipyw.VBox):
         height: int = 25,
     ):
         super().__init__()
-        d = Event(source=self, watched_events=["wheel"])  # , "mousemove", "mouseleave"]
+        d = Event(
+            source=self, watched_events=["wheel", "keydown"]
+        )  # , "mousemove", "mouseleave"]
         d.on_dom_event(self.event_handler)
         self.add_class("better-tree-box")
         self.tree = tree
@@ -502,16 +510,19 @@ class TreeWidget(ipyw.VBox):
         while parent.id != "root":
             parent.opened = True
             parent = self.tree.parent_of(parent)
+        self.compute_visible()
+        self.refresh()
 
-        for i, node_id in enumerate(self._compute_visible()):
-            if node_id == node.id:
+        for i, n in enumerate(self.viewable_nodes):
+            if n.id == node.id:
                 self.cursor = i
                 break
+        self.slider.value = len(self.viewable_nodes) - self.cursor
         self.refresh()
 
     def event_handler(self, event):
         # TODO: add trackpad detection/option
-        if "deltaY" in event:
+        if "deltaY" in event:  # Mousewheel
             direction = 1 if event["deltaY"] > 0 else -1
             if time.time() - self.last_scroll_time < 0.1:  # Accelerate
                 self.last_deltaY = event["deltaY"]
@@ -521,6 +532,40 @@ class TreeWidget(ipyw.VBox):
             else:  # Reset Speed to 1
                 self.scroll_speed = 1
                 self.scroll(direction)
+        elif self.selected_node is not None:  # Key Event
+            k = event.get("key", None)
+            ctrl = event.get("ctrlKey", False)
+            current_parent = self.tree.parent_of(self.selected_node)
+            if current_parent is None:
+                return  # Cannot move root
+            current_pos = current_parent.data["children"].index(self.selected_node.id)
+            if k in ["ArrowLeft", "ArrowRight"]:
+                if k == "ArrowLeft":
+                    if current_parent == self.tree.root:
+                        pass  # No suitable parent
+                    else:
+                        new_parent = self.tree.parent_of(current_parent)
+                        new_pos = (
+                            new_parent.data["children"].index(current_parent.id) + 1
+                        )
+                        self.tree.move(self.selected_node, new_parent, new_pos)
+                elif k == "ArrowRight":
+                    if current_pos == 0:
+                        pass  # No suitable parent
+                    else:
+                        new_parent = current_parent.data["children"][current_pos - 1]
+                        self.tree.move(self.selected_node, new_parent)
+            if k in ["ArrowUp", "ArrowDown"]:
+                if k == "ArrowUp":
+                    self.tree.move(
+                        self.selected_node, current_parent, max(0, current_pos - 1)
+                    )
+                elif k == "ArrowDown":
+                    self.tree.move(
+                        self.selected_node,
+                        current_parent,
+                        min(len(current_parent.data["children"]) - 1, current_pos + 1),
+                    )
 
     def refresh(self):
         inview = self._compute_inview()
